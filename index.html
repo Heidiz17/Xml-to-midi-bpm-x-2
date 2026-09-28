@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>音遊樂譜工具箱 - XML 對齊 175 BPM Turbo</title>
+  <title>音遊樂譜工具箱 - XML 轉 175 BPM (半拍拉長變一拍)</title>
   <style>
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body {
@@ -90,7 +90,7 @@
 <body>
 
 <div class="card">
-  <h1>🎼 XML 轉 Spotify 175 BPM 對齊工具</h1>
+  <h1>🎼 XML 轉 175 BPM (倍速時值補償)</h1>
   
   <div class="drop-zone" id="dropZone">
     <p>📁 拖入或點擊選取 <b>MusicXML (.xml / .musicxml)</b></p>
@@ -104,12 +104,12 @@
       <input type="number" id="origBpm" class="bpm-input" value="88">
     </div>
     <div class="setting-row">
-      <label for="targetBpm"><b>Spotify 目標 BPM：</b></label>
+      <label for="targetBpm"><b>目標輸出 BPM：</b></label>
       <input type="number" id="targetBpm" class="bpm-input" value="175">
     </div>
   </div>
 
-  <button class="btn" id="convertBtn" disabled>一鍵開 Turbo 鎖死 175 BPM 下載</button>
+  <button class="btn" id="convertBtn" disabled>一鍵輸出 175 BPM 完美對齊 MIDI</button>
   <div class="status" id="statusText">請先選取 XML 樂譜檔案</div>
 </div>
 
@@ -145,7 +145,7 @@
     statusText.textContent = "讀取中...";
     try {
       xmlString = await file.text();
-      statusText.textContent = "已就緒！點擊按鈕即可精準咬死 175 BPM。";
+      statusText.textContent = "已就緒！點擊按鈕即可精準轉換。";
       convertBtn.disabled = false;
     } catch (err) {
       statusText.textContent = "讀取失敗，請確認檔案格式。";
@@ -163,7 +163,7 @@
 
   convertBtn.addEventListener('click', () => {
     if (!xmlString) return;
-    statusText.textContent = "正在計算精準時間軸...";
+    statusText.textContent = "正在計算時值並生成 MIDI...";
 
     try {
       const parser = new DOMParser();
@@ -176,6 +176,9 @@
       let divisions = 1;
       let currentDivPos = 0;
       let events = [];
+
+      // 時值拉長比例：以 175/88 為基準（約 2.0 倍），將原本半拍放大為一整拍！
+      const stretchRatio = (targetBpm / origBpm);
 
       const measures = xmlDoc.querySelectorAll("measure");
       measures.forEach(measure => {
@@ -204,10 +207,9 @@
               const alter = alterTag ? parseInt(alterTag.textContent) || 0 : 0;
               const midiPitch = (octave + 1) * 12 + stepMap[step] + alter;
 
-              // 將原曲 88 基準轉換至 175 目標基準
-              const timeScale = targetBpm / (origBpm * 2);
-              const startTick = Math.round((startDiv / divisions) * PPQ * timeScale);
-              const durationTick = Math.max(1, Math.round((durDiv / divisions) * PPQ * timeScale));
+              // 將音符位置與長度同步拉長（半拍變一拍）
+              const startTick = Math.round((startDiv / divisions) * PPQ * stretchRatio);
+              const durationTick = Math.max(1, Math.round((durDiv / divisions) * PPQ * stretchRatio));
               const endTick = startTick + durationTick;
 
               events.push({ tick: startTick, type: 0x90, note: midiPitch, vel: 90 });
@@ -227,7 +229,7 @@
       let trackBytes = [];
       const mpqn = Math.round(60000000 / targetBpm);
 
-      // 設定標準 175 BPM 時鐘
+      // Tempo Event (鎖死目標 BPM)
       trackBytes.push(0x00, 0xFF, 0x51, 0x03, (mpqn >> 16) & 0xFF, (mpqn >> 8) & 0xFF, mpqn & 0xFF);
 
       let lastTick = 0;
@@ -257,11 +259,11 @@
       const a = document.createElement("a");
       const baseName = currentFileName.replace(/\.[^/.]+$/, "");
       a.href = url;
-      a.download = `${baseName}_${intTargetBpm=Math.round(targetBpm)}BPM_SpotifySync.mid`;
+      a.download = `${baseName}_${Math.round(targetBpm)}BPM_DoubleLength.mid`;
       a.click();
       URL.revokeObjectURL(url);
 
-      statusText.textContent = `[完成] 成功鎖死 ${targetBpm} BPM！已完美對齊 Spotify！`;
+      statusText.textContent = `[成功] 拍速設為 ${targetBpm} BPM，時值已拉長一倍！下載完成！`;
     } catch (err) {
       console.error(err);
       statusText.textContent = "處理出錯，請確認 XML 檔案。";
