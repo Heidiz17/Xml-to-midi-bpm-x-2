@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>音遊樂譜工具箱 - XML to MIDI 加速器</title>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      background: #141419;
+      color: #f0f0f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+    }
+    .card {
+      background: #22222c;
+      border-radius: 16px;
+      padding: 24px;
+      width: 100%;
+      max-width: 520px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+      border: 1px solid #333342;
+    }
+    h1 { margin-top: 0; font-size: 20px; text-align: center; color: #64b5f6; }
+    .drop-zone {
+      border: 2px dashed #64b5f6;
+      border-radius: 12px;
+      padding: 36px 16px;
+      text-align: center;
+      background: #1a1a24;
+      cursor: pointer;
+      margin: 20px 0;
+      transition: background 0.2s;
+    }
+    .drop-zone.hover { background: #26384c; border-color: #90caf9; }
+    .drop-zone p { margin: 6px 0; color: #a0a0b2; font-size: 14px; }
+    .file-name { color: #81c784; font-weight: bold; margin-top: 8px; word-break: break-all; }
+    .option-box {
+      background: #1a1a24;
+      padding: 14px 18px;
+      border-radius: 10px;
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+    }
+    .option-box input { width: 18px; height: 18px; accent-color: #64b5f6; cursor: pointer; }
+    .btn {
+      width: 100%;
+      background: #1976d2;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #1565c0; }
+    .btn:disabled { background: #444; color: #888; cursor: not-allowed; }
+    .status {
+      margin-top: 14px;
+      font-size: 13px;
+      color: #90caf9;
+      text-align: center;
+      min-height: 20px;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>🎼 音遊樂譜處理工具箱</h1>
+  
+  <div class="drop-zone" id="dropZone">
+    <p>📁 拖入 <b>MusicXML (.xml / .musicxml)</b> 到此處</p>
+    <div class="file-name" id="fileName">未選擇檔案</div>
+    <input type="file" id="fileInput" accept=".xml,.musicxml" style="display: none;">
+  </div>
+
+  <label class="option-box">
+    <input type="checkbox" id="doubleSpeed" checked>
+    <span><b>速度翻倍 / 時值減半</b>：將 88 BPM 壓縮對齊 176 BPM</span>
+  </label>
+
+  <button class="btn" id="convertBtn" disabled>一鍵轉換並下載 176 BPM MIDI</button>
+  <div class="status" id="statusText">請先拖入 XML 樂譜檔案</div>
+</div>
+
+<script>
+  let xmlString = "";
+  let currentFileName = "";
+
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const fileNameDisplay = document.getElementById('fileName');
+  const doubleSpeed = document.getElementById('doubleSpeed');
+  const convertBtn = document.getElementById('convertBtn');
+  const statusText = document.getElementById('statusText');
+
+  const stepMap = { 'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11 };
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('hover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('hover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) handleFile(e.target.files[0]);
+  });
+
+  async function handleFile(file) {
+    currentFileName = file.name;
+    fileNameDisplay.textContent = currentFileName;
+    statusText.textContent = "讀取樂譜檔案中...";
+    try {
+      xmlString = await file.text();
+      statusText.textContent = "已成功載入！點擊按鈕即可匯出 MIDI。";
+      convertBtn.disabled = false;
+    } catch (err) {
+      statusText.textContent = "讀取失敗，請確認檔案格式。";
+    }
+  }
+
+  // 純原生寫出標準 MIDI 檔案二進位邏輯 (零外部依賴)
+  function writeVarInt(value) {
+    let buffer = [];
+    buffer.push(value & 0x7F);
+    while ((value >>= 7)) {
+      buffer.push((value & 0x7F) | 0x80);
+    }
+    return buffer.reverse();
+  }
+
+  convertBtn.addEventListener('click', () => {
+    if (!xmlString) return;
+    statusText.textContent = "正在解析音符並建立 MIDI...";
+
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+
+      const PPQ = 480;
+      const speedScale = doubleSpeed.checked ? 0.5 : 1.0;
+      let divisions = 1;
+      let currentDivPos = 0;
+      let events = [];
+
+      const measures = xmlDoc.querySelectorAll("measure");
+      measures.forEach(measure => {
+        const divTag = measure.querySelector("divisions");
+        if (divTag) divisions = parseInt(divTag.textContent) || 1;
+
+        let noteCursor = currentDivPos;
+        const notes = measure.querySelectorAll("note");
+
+        notes.forEach(noteNode => {
+          const isRest = noteNode.querySelector("rest") !== null;
+          const isChord = noteNode.querySelector("chord") !== null;
+          const durTag = noteNode.querySelector("duration");
+          const durDiv = durTag ? parseInt(durTag.textContent) || divisions : divisions;
+
+          let startDiv = isChord ? (noteCursor - durDiv) : noteCursor;
+
+          if (!isRest) {
+            const stepTag = noteNode.querySelector("pitch > step");
+            const octTag = noteNode.querySelector("pitch > octave");
+            const alterTag = noteNode.querySelector("pitch > alter");
+
+            if (stepTag && octTag) {
+              const step = stepTag.textContent.trim();
+              const octave = parseInt(octTag.textContent);
+              const alter = alterTag ? parseInt(alterTag.textContent) || 0 : 0;
+              const midiPitch = (octave + 1) * 12 + stepMap[step] + alter;
+
+              const startTick = Math.round((startDiv / divisions) * PPQ * speedScale);
+              const durationTick = Math.max(1, Math.round((durDiv / divisions) * PPQ * speedScale));
+              const endTick = startTick + durationTick;
+
+              events.push({ tick: startTick, type: 0x90, note: midiPitch, vel: 90 });
+              events.push({ tick: endTick, type: 0x80, note: midiPitch, vel: 0 });
+            }
+          }
+
+          if (!isChord) {
+            noteCursor += durDiv;
+          }
+        });
+        currentDivPos = noteCursor;
+      });
+
+      // 依時間排序 MIDI 事件
+      events.sort((a, b) => a.tick === b.tick ? (a.type === 0x80 ? -1 : 1) : a.tick - b.tick);
+
+      // 構建 Track 數據
+      let trackBytes = [];
+      const bpm = doubleSpeed.checked ? 176 : 88;
+      const mpqn = Math.round(60000000 / bpm);
+
+      // Set Tempo Meta Event (Delta-time 0)
+      trackBytes.push(0x00, 0xFF, 0x51, 0x03, (mpqn >> 16) & 0xFF, (mpqn >> 8) & 0xFF, mpqn & 0xFF);
+
+      let lastTick = 0;
+      events.forEach(ev => {
+        const delta = ev.tick - lastTick;
+        lastTick = ev.tick;
+        trackBytes.push(...writeVarInt(delta));
+        trackBytes.push(ev.type, ev.note, ev.vel);
+      });
+
+      // End of Track Meta Event
+      trackBytes.push(0x00, 0xFF, 0x2F, 0x00);
+
+      // 構建 Header Chunk (Format 0, 1 Track)
+      const headerBytes = [
+        0x4D, 0x54, 0x68, 0x64, // 'MThd'
+        0x00, 0x00, 0x00, 0x06, // Chunk length: 6
+        0x00, 0x00,             // Format 0
+        0x00, 0x01,             // 1 Track
+        (PPQ >> 8) & 0xFF, PPQ & 0xFF // Division
+      ];
+
+      // Track Chunk Header
+      const trackLen = trackBytes.length;
+      const trackHeader = [
+        0x4D, 0x54, 0x72, 0x6B, // 'MTrk'
+        (trackLen >> 24) & 0xFF, (trackLen >> 16) & 0xFF, (trackLen >> 8) & 0xFF, trackLen & 0xFF
+      ];
+
+      const fullMidi = new Uint8Array([...headerBytes, ...trackHeader, ...trackBytes]);
+      const blob = new Blob([fullMidi], { type: "audio/midi" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const baseName = currentFileName.replace(/\.[^/.]+$/, "");
+      a.href = url;
+      a.download = `${baseName}_176BPM.mid`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      statusText.textContent = `[轉換成功] 共匯出 ${events.length / 2} 粒音符！已成功下載 MIDI 檔！`;
+    } catch (err) {
+      console.error(err);
+      statusText.textContent = "解析出錯，請確認 XML 檔案格式。";
+    }
+  });
+</script>
+
+</body>
+</html>
