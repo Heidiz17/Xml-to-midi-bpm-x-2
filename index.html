@@ -29,27 +29,42 @@
     .drop-zone {
       border: 2px dashed #64b5f6;
       border-radius: 12px;
-      padding: 36px 16px;
+      padding: 32px 16px;
       text-align: center;
       background: #1a1a24;
       cursor: pointer;
-      margin: 20px 0;
-      transition: background 0.2s;
+      margin: 18px 0;
     }
     .drop-zone.hover { background: #26384c; border-color: #90caf9; }
     .drop-zone p { margin: 6px 0; color: #a0a0b2; font-size: 14px; }
     .file-name { color: #81c784; font-weight: bold; margin-top: 8px; word-break: break-all; }
-    .option-box {
+    
+    .setting-group {
       background: #1a1a24;
-      padding: 14px 18px;
       border-radius: 10px;
-      margin-bottom: 18px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      cursor: pointer;
+      padding: 12px 16px;
+      margin-bottom: 16px;
     }
-    .option-box input { width: 18px; height: 18px; accent-color: #64b5f6; cursor: pointer; }
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .setting-row:last-child { margin-bottom: 0; }
+    .setting-row label { font-size: 14px; color: #e0e0e0; cursor: pointer; }
+    .bpm-input {
+      background: #2a2a36;
+      border: 1px solid #444455;
+      color: #64b5f6;
+      font-size: 16px;
+      font-weight: bold;
+      width: 70px;
+      text-align: center;
+      border-radius: 6px;
+      padding: 4px;
+    }
+    
     .btn {
       width: 100%;
       background: #1976d2;
@@ -60,7 +75,6 @@
       font-size: 16px;
       font-weight: bold;
       cursor: pointer;
-      transition: background 0.2s;
     }
     .btn:hover { background: #1565c0; }
     .btn:disabled { background: #444; color: #888; cursor: not-allowed; }
@@ -70,28 +84,35 @@
       color: #90caf9;
       text-align: center;
       min-height: 20px;
-      white-space: pre-line;
     }
   </style>
 </head>
 <body>
 
 <div class="card">
-  <h1>🎼 音遊樂譜處理工具箱</h1>
+  <h1>🎼 MusicXML 轉 176 BPM 工具</h1>
   
   <div class="drop-zone" id="dropZone">
-    <p>📁 拖入 <b>MusicXML (.xml / .musicxml)</b> 到此處</p>
+    <p>📁 拖入或點擊選取 <b>MusicXML (.xml / .musicxml)</b></p>
     <div class="file-name" id="fileName">未選擇檔案</div>
     <input type="file" id="fileInput" accept=".xml,.musicxml" style="display: none;">
   </div>
 
-  <label class="option-box">
-    <input type="checkbox" id="doubleSpeed" checked>
-    <span><b>速度翻倍 / 時值減半</b>：將 88 BPM 壓縮對齊 176 BPM</span>
-  </label>
+  <div class="setting-group">
+    <div class="setting-row">
+      <label for="bpmVal"><b>目標拍速 (BPM)：</b></label>
+      <input type="number" id="bpmVal" class="bpm-input" value="176">
+    </div>
+    <div class="setting-row" style="margin-top: 10px;">
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" id="keepNoteLength" checked style="width: 17px; height: 17px; accent-color: #64b5f6;">
+        <span><b>保持原音符長度</b>（保留八分音符半拍，不縮減為 16 分）</span>
+      </label>
+    </div>
+  </div>
 
-  <button class="btn" id="convertBtn" disabled>一鍵轉換並下載 176 BPM MIDI</button>
-  <div class="status" id="statusText">請先拖入 XML 樂譜檔案</div>
+  <button class="btn" id="convertBtn" disabled>一鍵轉換並下載 MIDI</button>
+  <div class="status" id="statusText">請先選取 XML 樂譜檔案</div>
 </div>
 
 <script>
@@ -101,7 +122,8 @@
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const fileNameDisplay = document.getElementById('fileName');
-  const doubleSpeed = document.getElementById('doubleSpeed');
+  const bpmVal = document.getElementById('bpmVal');
+  const keepNoteLength = document.getElementById('keepNoteLength');
   const convertBtn = document.getElementById('convertBtn');
   const statusText = document.getElementById('statusText');
 
@@ -122,17 +144,16 @@
   async function handleFile(file) {
     currentFileName = file.name;
     fileNameDisplay.textContent = currentFileName;
-    statusText.textContent = "讀取樂譜檔案中...";
+    statusText.textContent = "讀取中...";
     try {
       xmlString = await file.text();
-      statusText.textContent = "已成功載入！點擊按鈕即可匯出 MIDI。";
+      statusText.textContent = "已就緒！點擊下方按鈕即可匯出正確拍速的 MIDI。";
       convertBtn.disabled = false;
     } catch (err) {
       statusText.textContent = "讀取失敗，請確認檔案格式。";
     }
   }
 
-  // 純原生寫出標準 MIDI 檔案二進位邏輯 (零外部依賴)
   function writeVarInt(value) {
     let buffer = [];
     buffer.push(value & 0x7F);
@@ -144,14 +165,15 @@
 
   convertBtn.addEventListener('click', () => {
     if (!xmlString) return;
-    statusText.textContent = "正在解析音符並建立 MIDI...";
+    statusText.textContent = "正在生成 MIDI...";
 
     try {
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(xmlString, "text/xml");
 
       const PPQ = 480;
-      const speedScale = doubleSpeed.checked ? 0.5 : 1.0;
+      // 若勾選保持原音符長度，比例為 1.0 (八分音符依然係八分音符)
+      const scale = keepNoteLength.checked ? 1.0 : 0.5;
       let divisions = 1;
       let currentDivPos = 0;
       let events = [];
@@ -183,8 +205,8 @@
               const alter = alterTag ? parseInt(alterTag.textContent) || 0 : 0;
               const midiPitch = (octave + 1) * 12 + stepMap[step] + alter;
 
-              const startTick = Math.round((startDiv / divisions) * PPQ * speedScale);
-              const durationTick = Math.max(1, Math.round((durDiv / divisions) * PPQ * speedScale));
+              const startTick = Math.round((startDiv / divisions) * PPQ * scale);
+              const durationTick = Math.max(1, Math.round((durDiv / divisions) * PPQ * scale));
               const endTick = startTick + durationTick;
 
               events.push({ tick: startTick, type: 0x90, note: midiPitch, vel: 90 });
@@ -199,15 +221,13 @@
         currentDivPos = noteCursor;
       });
 
-      // 依時間排序 MIDI 事件
       events.sort((a, b) => a.tick === b.tick ? (a.type === 0x80 ? -1 : 1) : a.tick - b.tick);
 
-      // 構建 Track 數據
       let trackBytes = [];
-      const bpm = doubleSpeed.checked ? 176 : 88;
-      const mpqn = Math.round(60000000 / bpm);
+      const targetBPM = parseInt(bpmVal.value) || 176;
+      const mpqn = Math.round(60000000 / targetBPM);
 
-      // Set Tempo Meta Event (Delta-time 0)
+      // Tempo Event
       trackBytes.push(0x00, 0xFF, 0x51, 0x03, (mpqn >> 16) & 0xFF, (mpqn >> 8) & 0xFF, mpqn & 0xFF);
 
       let lastTick = 0;
@@ -218,22 +238,16 @@
         trackBytes.push(ev.type, ev.note, ev.vel);
       });
 
-      // End of Track Meta Event
       trackBytes.push(0x00, 0xFF, 0x2F, 0x00);
 
-      // 構建 Header Chunk (Format 0, 1 Track)
       const headerBytes = [
-        0x4D, 0x54, 0x68, 0x64, // 'MThd'
-        0x00, 0x00, 0x00, 0x06, // Chunk length: 6
-        0x00, 0x00,             // Format 0
-        0x00, 0x01,             // 1 Track
-        (PPQ >> 8) & 0xFF, PPQ & 0xFF // Division
+        0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06,
+        0x00, 0x00, 0x00, 0x01, (PPQ >> 8) & 0xFF, PPQ & 0xFF
       ];
 
-      // Track Chunk Header
       const trackLen = trackBytes.length;
       const trackHeader = [
-        0x4D, 0x54, 0x72, 0x6B, // 'MTrk'
+        0x4D, 0x54, 0x72, 0x6B,
         (trackLen >> 24) & 0xFF, (trackLen >> 16) & 0xFF, (trackLen >> 8) & 0xFF, trackLen & 0xFF
       ];
 
@@ -243,14 +257,14 @@
       const a = document.createElement("a");
       const baseName = currentFileName.replace(/\.[^/.]+$/, "");
       a.href = url;
-      a.download = `${baseName}_176BPM.mid`;
+      a.download = `${baseName}_${targetBPM}BPM_Fixed.mid`;
       a.click();
       URL.revokeObjectURL(url);
 
-      statusText.textContent = `[轉換成功] 共匯出 ${events.length / 2} 粒音符！已成功下載 MIDI 檔！`;
+      statusText.textContent = `[成功] 拍速設為 ${targetBPM} BPM，音符長度保持標準半拍！已下載！`;
     } catch (err) {
       console.error(err);
-      statusText.textContent = "解析出錯，請確認 XML 檔案格式。";
+      statusText.textContent = "處理出錯，請確認 XML 檔案。";
     }
   });
 </script>
